@@ -2,41 +2,102 @@ name: Terraform CI
 
 on:
   pull_request:
+    branches:
+      - main
     paths:
       - '**.tf'
       - '**.tfvars'
+      - 'policy/**.rego'
+
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
   terraform:
+    name: Plan + Scan + Policy
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      # ── 1. Checkout code ──────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
 
+      # ── 2. Setup Terraform ────────────────────────────
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.7.0
+          terraform_wrapper: false
 
-      - name: terraform init
+      # ── 3. Terraform Init ─────────────────────────────
+      - name: Terraform Init
         run: terraform init
+        env:
+          AWS_ACCESS_KEY_ID: mock_access_key
+          AWS_SECRET_ACCESS_KEY: mock_secret_key
+          AWS_DEFAULT_REGION: us-east-1
 
-      - name: terraform validate
+      # ── 4. Terraform Validate ─────────────────────────
+      - name: Terraform Validate
         run: terraform validate
 
-      - name: terraform plan
-        run: terraform plan -out=plan.tfplan
-
-      - name: OPA policy check
+      # ── 5. Terraform Plan ─────────────────────────────
+      - name: Terraform Plan
         run: |
-          curl -L https://github.com/open-policy-agent/conftest/releases/download/v0.46.0/conftest_0.46.0_Linux_x86_64.tar.gz | tar xz
+          terraform plan -out=plan.tfplan
           terraform show -json plan.tfplan > plan.json
-          ./conftest test plan.json --policy policy/
+        env:
+          AWS_ACCESS_KEY_ID: mock_access_key
+          AWS_SECRET_ACCESS_KEY: mock_secret_key
+          AWS_DEFAULT_REGION: us-east-1
 
-      - name: Infracost estimate
-        uses: infracost/actions/setup@v2
+      # ── 6. Post Plan output to PR ─────────────────────
+      - name: Post Plan to PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { execSync } = require('child_process');
+            const plan = execSync('terraform show -no-color plan.tfplan').toString();
+            const body = `## 📋 Terraform Plan\n\`\`\`hcl\n${plan.slice(0, 60000)}\n\`\`\``;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
+
+      # ── 7. OPA / Conftest policy check ───────────────
+      - name: Install Conftest
+        run: |
+          curl -L https://github.com/open-policy-agent/conftest/releases/download/v0.46.0/conftest_0.46.0_Linux_x86_64.tar.gz \
+            | tar xz
+          sudo mv conftest /usr/local/bin/
+
+      - name: OPA Policy Check
+        run: conftest test plan.json --policy policy/
+
+      # ── 8. Infracost cost estimate ────────────────────
+      - name: Setup Infracost
+        uses: infracost/actions/setup@v3
         with:
           api-key: ${{ secrets.INFRACOST_API_KEY }}
 
-      - name: Post cost estimate to PR
-        run: infracost diff --path=plan.tfplan --format=github-comment
+      - name: Run Infracost
+        run: |
+          infracost scan --path . \
+            --format json \
+            --out-file infracost.json
+        env:
+          INFRACOST_API_KEY: ${{ secrets.INFRACOST_API_KEY }}
+
+      - name: Post Infracost comment to PR
+        run: |
+          infracost comment github \
+            --path infracost.json \
+            --repo ${{ github.repository }} \
+            --pull-request ${{ github.event.pull_request.number }} \
+            --github-token ${{ secrets.GITHUB_TOKEN }} \
+            --behavior update
+        env:
+          INFRACOST_API_KEY: ${{ secrets.INFRACOST_API_KEY }}
