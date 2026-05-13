@@ -66,11 +66,11 @@ resource "aws_instance" "demo" {
 
   root_block_device {
     volume_type = "gp3"
-    volume_size = 6
+    volume_size = 8
   }
 
   tags = {
-    #Environment = var.environment   # ← commented out to test policy
+    Environment = var.environment   # ← commented out to test policy
     Team       = "platform"
     CostCentre = "eng-001"
     Owner      = "devraj"
