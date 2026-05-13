@@ -21,3 +21,15 @@ plan.json
 
 # VSCode
 .vscode/
+
+# Security — never commit credentials
+GitHub-API-Key
+infracost-api-key
+*key*
+*secret*
+*token*
+*password*
+*credentials*
+*.pem
+.env
+.env*
